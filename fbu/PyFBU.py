@@ -56,6 +56,12 @@ class PyFBU(object):
             checklen(self.data,bin)
         for bin in [self.lower,self.upper]:
             checklen(bin,responsetruthbins)
+
+        # check that backgrounds and background normalization systematics
+        # have the same keys
+        assert self.background.keys() == self.backgroundsyst.keys(),\
+            'Input Validation Error: inconstistent background dict and backgroundsyst dict keys'
+
     #__________________________________________________________
     def fluctuate(self, data):
         random.seed(self.rndseed)
@@ -158,7 +164,7 @@ class PyFBU(object):
 
             print(self.nuts_kwargs)
 
-            
+
             if self.mode:
                 map_estimate = mc.find_MAP(model=model, method=self.MAP_method)
                 print (map_estimate)
