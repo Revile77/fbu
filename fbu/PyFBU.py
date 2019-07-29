@@ -1,5 +1,5 @@
 import pymc3 as mc
-from numpy import random, dot, array, inf, sum, sqrt, reciprocal
+from numpy import random, dot, array, inf, sum, sqrt, reciprocal, shape
 import theano
 import copy
 
@@ -39,7 +39,7 @@ class PyFBU(object):
         self.backgroundsyst = backgroundsyst
         self.backgrounderr = {}
         self.objsyst        = objsyst
-        self.include_gammas = None
+        self.gammas = None
         self.gammas_lower = 0.
         self.gammas_upper = 2.
         self.nbins = 0
@@ -66,9 +66,12 @@ class PyFBU(object):
         for bin in [self.lower,self.upper]:
             checklen(bin,responsetruthbins)
 
-        if self.include_gammas is not None:
+        if self.gammas is not None:
             assert self.backgrounderr != {},\
-            'To include gammas, must provide background MC stat uncertainties'
+                'To include gammas, must provide background MC stat uncertainties'
+
+            assert isinstance(self.gammas, dict),\
+                'Attribute include_gammas must be a dictionary'
     #__________________________________________________________
     def fluctuate(self, data, err=None):
         random.seed(self.rndseed)
@@ -105,19 +108,28 @@ class PyFBU(object):
         backgroundnormsysts = array([])
         if nbckg>0:
             backgrounds = array([background[key] for key in backgroundkeys])
-            if self.include_gammas is not None:
+            if self.gammas is not None:
                 backgrounds_err_sq = array([self.backgrounderr[key] for key in backgroundkeys])
                 backgrounds_err_sq = backgrounds_err_sq**2
             backgroundnormsysts = array([self.backgroundsyst[key] for key in backgroundkeys])
 
         # need summed total background and it's error for gamma NPs
         # to take into account MC stat uncertainty of backgrounds
-        if self.include_gammas is not None:
-            totalbckg = sum(backgrounds, axis=0)
-            totalbckg_err = sqrt(sum(backgrounds_err_sq, axis=0))
-            assert len(totalbckg) == len(self.include_gammas),\
-                'Gamma NP specification error: Inconsistent size of '\
-                'include_gammas array and the background number of bins'
+        if self.gammas is not None:
+            totalbckg = {}
+            totalbckg_err = {}
+            for bckg_group, params in self.gammas.items():
+                relevant_bckgs = params['bckgs'] # list of backgrounds to sum up
+                relevant_bckg_indices = [i for i, k in enumerate(backgroundkeys)
+                                         if k in relevant_bckgs]
+                totalbckg[bckg_group] = sum(backgrounds[relevant_bckg_indices], axis=0)
+                totalbckg_err[bckg_group]\
+                    = sqrt(sum(backgrounds_err_sq[relevant_bckg_indices], axis=0))
+            # totalbckg = sum(backgrounds, axis=0)
+            # totalbckg_err = sqrt(sum(backgrounds_err_sq, axis=0))
+            # assert len(totalbckg) == len(self.gammas),\
+            #     'Gamma NP specification error: Inconsistent size of '\
+            #     'include_gammas array and the background number of bins'
 
         # unpack object systematics dictionary
         objsystkeys = self.objsyst['signal'].keys()
@@ -189,22 +201,42 @@ class PyFBU(object):
                                                       tau=1.0, **add_kwargs))
                 objnuisances = mc.math.stack(objnuisances)
 
-            if self.include_gammas is not None and nbckg > 0:
-                gammas = []
+            if self.gammas is not None and nbckg > 0:
+                gammas = {}
                 gamma_poissons = []
-                tau = (totalbckg/totalbckg_err)**2
-                for i,bin in enumerate(self.include_gammas):
-                    if bin:
-                        gammas.append(mc.Uniform('flat_gamma_{0}'.format(i),
-                                                 lower=self.gammas_lower,
-                                                 upper=self.gammas_upper))
-                        # construct the Poisson constraint on gammas
-                        gamma_poissons.append(mc.Poisson(
-                            'poisson_gamma_{0}'.format(i),
-                            mu=gammas[i]*tau[i], observed=tau[i]))
-                    else:
-                        gammas.append(1.)
-                gammas = mc.math.stack(gammas)
+                for bckg_group in totalbckg.keys():
+                    tau = (totalbckg[bckg_group]/totalbckg_err[bckg_group])**2
+                    gammas[bckg_group] = []
+                    for i, bin in enumerate(self.gammas[bckg_group]['bins']):
+                        if bin:
+                            gammas[bckg_group].append(
+                                mc.Uniform('flat_gamma_{0}_{1}'.format(
+                                    bckg_group, i),
+                                    lower=self.gammas_lower,
+                                    upper=self.gammas_upper))
+                            gamma_poissons.append(
+                                mc.Poisson('poisson_gamma_{0}_{1}'.format(
+                                    bckg_group, i),
+                                    mu=gammas[bckg_group][i]*tau[i],
+                                    observed=tau[i]))
+                        else:
+                            gammas[bckg_group].append(1.)
+
+                    gammas[bckg_group] = mc.math.stack(gammas[bckg_group])
+
+                # tau = (totalbckg/totalbckg_err)**2
+                # for i, bin in enumerate(self.gammas):
+                #     if bin:
+                #         gammas.append(mc.Uniform('flat_gamma_{0}'.format(i),
+                #                                  lower=self.gammas_lower,
+                #                                  upper=self.gammas_upper))
+                #         # construct the Poisson constraint on gammas
+                #         gamma_poissons.append(mc.Poisson(
+                #             'poisson_gamma_{0}'.format(i),
+                #             mu=gammas[i]*tau[i], observed=tau[i]))
+                #     else:
+                #         gammas.append(1.)
+                # gammas = mc.math.stack(gammas)
 
         # define potential to constrain truth spectrum
             if self.regularization:
@@ -220,13 +252,31 @@ class PyFBU(object):
 
                     smearedbackgrounds = backgrounds
                     if nobjsyst>0:
-                        smearbckg = smearbckg + theano.dot(objnuisances,backgroundobjsysts)
+                        smearbckg = smearbckg + theano.dot(objnuisances, backgroundobjsysts)
                         smearedbackgrounds = backgrounds*smearbckg
 
-                    bckg = theano.dot(1. + bckgnuisances*bckgnormerr,smearedbackgrounds)
+                    if self.gammas is not None:
+                        # 2D array, axis 0=backgrounds, axis 1=bins of background
+                        bckg = (1. + bckgnuisances*bckgnormerr)*smearedbackgrounds.T
+                        bckg_with_gammas = []
 
-                    if self.include_gammas is not None:
-                        bckg = bckg * gammas
+                        for bckg_group, params in self.gammas.items():
+                            relevant_bckgs = params['bckgs']
+                            relevant_bckg_indices = [i for i, k in enumerate(backgroundkeys)
+                                                     if k in relevant_bckgs]
+
+                            bckg_tmp = bckg[relevant_bckg_indices[0], :]
+                            for indx in relevant_bckg_indices[1:]:
+                                bckg_tmp += bckg[indx, :]
+                            bckg_tmp = mc.math.stack(bckg_tmp)
+                            bckg_with_gammas.append(bckg_tmp*gammas[bckg_group])
+
+                        bckg = bckg_with_gammas[0]
+                        for indx in range(1, len(bckg_with_gammas)):
+                            bckg += bckg_with_gammas[indx]
+                    else:
+                        bckg = theano.dot(1. + bckgnuisances*bckgnormerr,
+                                          smearedbackgrounds)
 
                 tresmat = array(resmat)
                 reco = theano.dot(truth, tresmat)
@@ -264,6 +314,9 @@ class PyFBU(object):
                 (self.nMCMC+self.nTune)*self.nChains/(finish_time-init_time)
             ))
 
+            from fbu import monitoring
+            monitoring.plot_energyplot(trace, self.name + '_energyplot.pdf')
+
             self.trace = [trace['truth%d'%bin][:] for bin in range(truthdim)]
             #self.trace = [copy.deepcopy(trace['truth%d'%bin][:]) for bin in range(truthdim)]
             self.nuisancestrace = {}
@@ -281,7 +334,7 @@ class PyFBU(object):
                             tmp = self.freeze_NPs[name]
                         except KeyError as e:
                             print('Warning: Missing NP trace', e)
-                if self.include_gammas is not None:
+                if self.gammas is not None:
                     for bin in range(self.nbins):
                         self.nuisancestrace['gamma_{0}'.format(bin)]\
                             = trace['flat_gamma_{0}'.format(bin)][:]
