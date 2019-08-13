@@ -132,20 +132,20 @@ class PyFBU(object):
                         add_kwargs = dict()
                     if err<0.:
                         bckgnuisances.append(
-                            mc.Uniform('norm_%s'%name,lower=0.,upper=3., **add_kwargs)
+                            mc.Uniform('norm_%s'%name,lower=0.,upper=3.,testval=0., **add_kwargs)
                             )
                     else:
                         # for fixed NP, one cannot use observed in bounded
                         # distribution, so we have to use unbounded one
                         if 'observed' in add_kwargs:
                             bckgnuisances.append(
-                                mc.Normal('gaus_%s'%name, mu=0.,tau=1.0,
+                                mc.Normal('gaus_%s'%name, mu=0.,tau=1.0,testval=0.,
                                           **add_kwargs)
                             )
                         else:
                             BoundedNormal = mc.Bound(mc.Normal, lower=(-1.0/err if err>0.0 else -inf))
                             bckgnuisances.append(
-                                BoundedNormal('gaus_%s'%name, mu=0.,tau=1.0)
+                                BoundedNormal('gaus_%s'%name, mu=0.,tau=1.0,testval=0.)
                             )
                 bckgnuisances = mc.math.stack(bckgnuisances)
 
@@ -159,11 +159,11 @@ class PyFBU(object):
                     if self.obj_syst_flatprior['key'] in name:
                         objnuisances.append(mc.Uniform('flat_%s'%name,
                                             lower=self.obj_syst_flatprior['lower'],
-                                            upper=self.obj_syst_flatprior['upper'],
+                                            upper=self.obj_syst_flatprior['upper'],testval=0.,
                                             **add_kwargs))
                     else:
                         objnuisances.append(mc.Normal('gaus_%s'%name,mu=0.,
-                                                      tau=1.0, **add_kwargs))
+                                                      tau=1.0,testval=0., **add_kwargs))
                 objnuisances = mc.math.stack(objnuisances)
 
         # define potential to constrain truth spectrum

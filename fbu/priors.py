@@ -17,7 +17,7 @@ def wrapper(priorname='',low=[],up=[],other_args={},optimized=False):
     truthprior = []
     for bin,(l,u) in enumerate(zip(low,up)):
         name = 'truth%d'%bin
-        default_args = dict(name=name,lower=l,upper=u)
+        default_args = dict(name=name,lower=l,upper=u,testval=(l+u)/2.)
         args = dict(list(default_args.items())+list(other_args.items()))
         prior = priormethod(**args)
         truthprior.append(prior)
